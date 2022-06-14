@@ -22,6 +22,10 @@ import java.util.*;
  */
 public class HeapFile implements DbFile {
 
+    private File file;
+
+    private TupleDesc td;
+
     /**
      * Constructs a heap file backed by the specified file.
      * 
@@ -31,6 +35,8 @@ public class HeapFile implements DbFile {
      */
     public HeapFile(File f, TupleDesc td) {
         // some code goes here
+        this.file = f;
+        this.td = td;
     }
 
     /**
@@ -40,7 +46,7 @@ public class HeapFile implements DbFile {
      */
     public File getFile() {
         // some code goes here
-        return null;
+        return this.file;
     }
 
     /**
@@ -54,7 +60,7 @@ public class HeapFile implements DbFile {
      */
     public int getId() {
         // some code goes here
-        throw new UnsupportedOperationException("implement this");
+        return this.file.getAbsoluteFile().hashCode();
     }
 
     /**
@@ -64,13 +70,26 @@ public class HeapFile implements DbFile {
      */
     public TupleDesc getTupleDesc() {
         // some code goes here
-        throw new UnsupportedOperationException("implement this");
+        return this.td;
     }
 
     // see DbFile.java for javadocs
     public Page readPage(PageId pid) {
         // some code goes here
-        return null;
+        int pageNo = pid.getPageNumber();
+        int pageSize = BufferPool.getPageSize();
+        try {
+            RandomAccessFile curFile = new RandomAccessFile(this.file, "r");
+            byte[] data = new byte[pageSize];
+            curFile.seek((long) pageNo * pageSize);
+            curFile.read(data);
+            HeapPage curPage = new HeapPage(new HeapPageId(pid.getTableId(), pid.getPageNumber()), data);
+            curFile.close();
+            return curPage;
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        throw new IllegalArgumentException();
     }
 
     // see DbFile.java for javadocs
@@ -84,7 +103,8 @@ public class HeapFile implements DbFile {
      */
     public int numPages() {
         // some code goes here
-        return 0;
+        long len = file.length();  // 获取HeapFile在磁盘的大小
+        return (int) Math.floor(len * 1.0 / BufferPool.getPageSize());
     }
 
     // see DbFile.java for javadocs
@@ -106,7 +126,83 @@ public class HeapFile implements DbFile {
     // see DbFile.java for javadocs
     public DbFileIterator iterator(TransactionId tid) {
         // some code goes here
-        return null;
+        return new HeapFileIterator(this, tid);
+    }
+
+    public class HeapFileIterator implements DbFileIterator {
+
+        private int curPageNo;
+
+        private int pageNum;
+
+        private Iterator<Tuple> iterator;
+
+        private HeapFile heapFile;
+
+        private TransactionId tid;
+
+        public HeapFileIterator (HeapFile heapFile, TransactionId tid) {
+            this.heapFile = heapFile;
+            this.tid = tid;
+            this.curPageNo = 0;
+            this.pageNum = heapFile.numPages();
+        }
+
+        public Iterator<Tuple> getNextPage(HeapPageId id) throws TransactionAbortedException, DbException {
+            BufferPool pool = Database.getBufferPool();  // 从bufferpool中读取page，如果没有再从磁盘读（getPage中有判断）
+            HeapPage page = (HeapPage) pool.getPage(this.tid, id, Permissions.READ_ONLY);
+            return page.iterator();
+        }
+
+        @Override
+        public void open() throws DbException, TransactionAbortedException {
+            this.curPageNo = 0;
+            HeapPageId pageId = new HeapPageId(this.heapFile.getId(), 0);  // table和HeapFile一一对应
+            this.iterator = this.getNextPage(pageId);
+        }
+
+        @Override
+        public boolean hasNext() throws DbException, TransactionAbortedException {
+            if (this.iterator == null) {
+                return false;
+            }
+            if (this.iterator.hasNext()) {
+                return true;
+            } else {
+                for (int i = this.curPageNo; i < this.pageNum; i++) {
+                    this.curPageNo += 1;
+                    this.iterator = this.getNextPage(new HeapPageId(this.heapFile.getId(), this.curPageNo));
+                    if (this.iterator == null) {
+                        return false;
+                    }
+                    if (this.iterator.hasNext()) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        @Override
+        public Tuple next() throws DbException, TransactionAbortedException, NoSuchElementException {
+            if (this.iterator == null || !this.iterator.hasNext()) {
+                throw new NoSuchElementException();
+            }
+            return this.iterator.next();
+        }
+
+        @Override
+        public void rewind() throws DbException, TransactionAbortedException {
+            this.curPageNo = 0;
+            this.close();
+            this.open();
+        }
+
+        @Override
+        public void close() {
+            this.curPageNo = 0;
+            this.iterator = null;
+        }
     }
 
 }

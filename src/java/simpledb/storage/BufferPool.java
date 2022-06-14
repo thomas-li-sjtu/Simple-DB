@@ -91,6 +91,7 @@ public class BufferPool {
             } else {
                 this.map.put(pid, Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid));
                 // 从磁盘读出page（page有自己的table id，而table和dbfile一一对应，dbfile是与磁盘交互的接口）
+                curPage = this.map.get(pid);  // 将载入buffer pool的page给到curPage
             }
         }
         return curPage;

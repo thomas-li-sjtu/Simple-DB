@@ -168,17 +168,15 @@ public class HeapFile implements DbFile {
             if (this.iterator.hasNext()) {
                 return true;
             } else {
-                for (int i = this.curPageNo; i < this.pageNum; i++) {
-                    this.curPageNo += 1;
-                    this.iterator = this.getNextPage(new HeapPageId(this.heapFile.getId(), this.curPageNo));
-                    if (this.iterator == null) {
-                        return false;
-                    }
-                    if (this.iterator.hasNext()) {
-                        return true;
-                    }
+                this.curPageNo += 1;
+                if (this.curPageNo >= pageNum) {
+                    return false;
                 }
-                return false;
+                this.iterator = this.getNextPage(new HeapPageId(this.heapFile.getId(), this.curPageNo));
+                if (this.iterator == null) {
+                    return false;
+                }
+                return this.iterator.hasNext();
             }
         }
 
@@ -192,14 +190,12 @@ public class HeapFile implements DbFile {
 
         @Override
         public void rewind() throws DbException, TransactionAbortedException {
-            this.curPageNo = 0;
             this.close();
             this.open();
         }
 
         @Override
         public void close() {
-            this.curPageNo = 0;
             this.iterator = null;
         }
     }

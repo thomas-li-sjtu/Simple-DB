@@ -126,6 +126,7 @@ public class HeapFile implements DbFile {
             if (curPage.getNumEmptySlots() > 0) {
                 curPage.insertTuple(t);
                 res.add(curPage);
+                this.writePage(curPage);
                 return res;
             }
         }

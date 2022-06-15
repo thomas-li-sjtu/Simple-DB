@@ -14,41 +14,45 @@ public class Join extends Operator {
 
     private static final long serialVersionUID = 1L;
 
+    private JoinPredicate p;
+
+    private OpIterator child1;
+
+    private OpIterator child2;
+
     /**
      * Constructor. Accepts two children to join and the predicate to join them
      * on
-     * 
-     * @param p
-     *            The predicate to use to join the children
-     * @param child1
-     *            Iterator for the left(outer) relation to join
-     * @param child2
-     *            Iterator for the right(inner) relation to join
+     *
+     * @param p      The predicate to use to join the children
+     * @param child1 Iterator for the left(outer) relation to join
+     * @param child2 Iterator for the right(inner) relation to join
      */
     public Join(JoinPredicate p, OpIterator child1, OpIterator child2) {
         // some code goes here
+        this.p = p;
+        this.child1 = child1;
+        this.child2 = child2;
     }
 
     public JoinPredicate getJoinPredicate() {
         // some code goes here
-        return null;
+        return this.p;
     }
 
     /**
-     * @return
-     *       the field name of join field1. Should be quantified by
-     *       alias or table name.
-     * */
+     * @return the field name of join field1. Should be quantified by
+     * alias or table name.
+     */
     public String getJoinField1Name() {
         // some code goes here
         return null;
     }
 
     /**
-     * @return
-     *       the field name of join field2. Should be quantified by
-     *       alias or table name.
-     * */
+     * @return the field name of join field2. Should be quantified by
+     * alias or table name.
+     */
     public String getJoinField2Name() {
         // some code goes here
         return null;
@@ -56,24 +60,32 @@ public class Join extends Operator {
 
     /**
      * @see TupleDesc#merge(TupleDesc, TupleDesc) for possible
-     *      implementation logic.
+     * implementation logic.
      */
     public TupleDesc getTupleDesc() {
         // some code goes here
-        return null;
+        return TupleDesc.merge(this.child1.getTupleDesc(), this.child2.getTupleDesc());
     }
 
     public void open() throws DbException, NoSuchElementException,
             TransactionAbortedException {
         // some code goes here
+        super.open();
+        this.child1.open();
+        this.child2.open();
     }
 
     public void close() {
         // some code goes here
+        super.close();
+        this.child1.close();
+        this.child2.close();
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
         // some code goes here
+        this.child1.rewind();
+        this.child1.rewind();
     }
 
     /**
@@ -90,24 +102,70 @@ public class Join extends Operator {
      * <p>
      * For example, if one tuple is {1,2,3} and the other tuple is {1,5,6},
      * joined on equality of the first column, then this returns {1,2,3,1,5,6}.
-     * 
+     *
      * @return The next matching tuple.
      * @see JoinPredicate#filter
      */
+    private Tuple curTuple;
+
     protected Tuple fetchNext() throws TransactionAbortedException, DbException {
         // some code goes here
+        while (this.child1.hasNext() || this.curTuple != null) {  // 第二个判断条件，如果curTuple是child1的最后一个tuple
+            if (this.child1.hasNext() && this.curTuple == null) {
+                this.curTuple = this.child1.next();
+            }
+            while (this.child2.hasNext()) {
+                Tuple tuple2 = this.child2.next();
+                if (this.p.filter(this.curTuple, tuple2)) {
+                    TupleDesc newDesc = TupleDesc.merge(
+                            this.curTuple.getTupleDesc(),
+                            tuple2.getTupleDesc()
+                    );
+                    Tuple result = new Tuple(newDesc);  // 建立新的tuple，newDesc使得该tuple的数值为空，但记录了字段属性
+
+                    // 将两个tuple的内容填充到新的tuple中
+                    int fieldIndex = 0;
+                    for (; fieldIndex < this.curTuple.getTupleDesc().numFields(); fieldIndex++) {
+                        result.setField(fieldIndex, this.curTuple.getField(fieldIndex));
+                    }
+                    for (;
+                         fieldIndex < this.curTuple.getTupleDesc().numFields() + tuple2.getTupleDesc().numFields();
+                         fieldIndex++) {
+                        result.setField(
+                                fieldIndex,
+                                tuple2.getField(fieldIndex - this.curTuple.getTupleDesc().numFields())
+                        );
+                    }
+
+                    if (!this.child2.hasNext()) {
+                        this.child2.rewind();
+                        this.curTuple = null;
+                    }
+                    return result;
+                }
+            }
+
+            // 遍历结束，child2重置，curTuple归null
+            this.child2.rewind();
+            this.curTuple = null;
+        }
         return null;
     }
 
     @Override
     public OpIterator[] getChildren() {
         // some code goes here
-        return null;
+        return new OpIterator[]{this.child1, this.child2};
     }
 
     @Override
     public void setChildren(OpIterator[] children) {
         // some code goes here
+        if (children == null || children.length < 2) {
+            return;
+        }
+        this.child1 = children[0];
+        this.child2 = children[1];
     }
 
 }

@@ -10,6 +10,7 @@ import simpledb.transaction.TransactionId;
 import java.io.*;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -40,7 +41,10 @@ public class BufferPool {
 
     private final int numPages;
 
-    private final ConcurrentHashMap<PageId, Page> map;  // 防止锁的占用
+    private final ConcurrentHashMap<PageId, Node<Page>> lruCache;  // 防止锁的占用
+
+    private final Node<Page> head;
+    private final Node<Page> tail;  // lruCache的头和尾
 
     /**
      * Creates a BufferPool that caches up to numPages pages.
@@ -50,7 +54,85 @@ public class BufferPool {
     public BufferPool(int numPages) {
         // some code goes here
         this.numPages = numPages;
-        this.map = new ConcurrentHashMap<>();
+        this.lruCache = new ConcurrentHashMap<>();
+        this.head = new Node<>();
+        this.tail = new Node<>();
+        this.head.setNext(this.tail);
+        this.tail.setPrev(this.head);
+    }
+
+    public class Node<T> {
+        private T data;
+        private Node<T> next;
+        private Node<T> prev;
+
+        public Node() {
+            this.next = null;
+            this.prev = null;
+        }
+
+        public Node(T dataVal) {
+            this.data = dataVal;
+            this.next = null;
+            this.prev = null;
+        }
+
+        public void setNext(Node<T> next) {
+            this.next = next;
+        }
+
+        public void setPrev(Node<T> prev) {
+            this.prev = prev;
+        }
+
+        public T getData() {
+            return data;
+        }
+
+        public Node<T> getNext() {
+            return next;
+        }
+
+        public Node<T> getPrev() {
+            return prev;
+        }
+    }
+
+    public void put(PageId pid, Page curPage) {
+        // 将curPage放到lruCache的最前面
+        Node<Page> curNode = new Node<>(curPage);
+        this.lruCache.put(pid, curNode);
+
+        curNode.setNext(this.head.getNext());
+        this.head.getNext().setPrev(curNode);  // 不能忽略这一步
+        this.head.setNext(curNode);
+    }
+
+    public void removeLast() {
+        // 淘汰最后一个Node
+        Node<Page> lastPage = this.getTail();
+        this.lruCache.remove(lastPage.getData().getId());
+
+        Node<Page> prevNode = lastPage.getPrev();
+        Node<Page> nextNode = lastPage.getNext();
+        prevNode.setNext(nextNode);
+        nextNode.setPrev(prevNode);
+    }
+
+    public void remove(PageId pageId) {
+        // 从中lruCahe中删除一个Page
+        // 从字典中删除
+        Node<Page> curNode = this.lruCache.get(pageId);
+        this.lruCache.remove(pageId);
+        // 从链表中删除
+        Node<Page> prevNode = curNode.getPrev();
+        Node<Page> nextNode = curNode.getNext();
+        prevNode.setNext(nextNode);
+        nextNode.setPrev(prevNode);
+    }
+
+    public Node<Page> getTail() {
+        return this.tail.getPrev();
     }
 
     public static int getPageSize() {
@@ -85,17 +167,21 @@ public class BufferPool {
     public Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
         // some code goes here
-        Page curPage = this.map.get(pid);
-        if (curPage == null) {
-            if (this.map.size() == this.numPages) {
-                throw new DbException("BufferPool is full...");
-            } else {
-                this.map.put(pid, Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid));
-                // 从磁盘读出page（page有自己的table id，而table和dbfile一一对应，dbfile是与磁盘交互的接口）
-                curPage = this.map.get(pid);  // 将载入buffer pool的page给到curPage
+        Node<Page> curNode = this.lruCache.get(pid);
+        if (curNode == null) {
+            if (this.lruCache.size() == this.numPages) {
+                // 淘汰最后一个Node
+                this.removeLast();
             }
+            this.put(pid, Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid));
+            // 从磁盘读出page（page有自己的table id，而table和dbfile一一对应，dbfile是与磁盘交互的接口）
+            curNode = this.lruCache.get(pid);  // 将载入buffer pool的page给到curPage
+            return curNode.getData();
+        } else {
+            this.remove(curNode.getData().getId());
+            this.put(curNode.getData().getId(), curNode.getData());
+            return curNode.getData();
         }
-        return curPage;
     }
 
     /**
@@ -164,9 +250,9 @@ public class BufferPool {
         // not necessary for lab1
         DbFile dbFile = Database.getCatalog().getDatabaseFile(tableId);
         List<Page> curPage = dbFile.insertTuple(tid, t);
-        for (Page page: curPage) {
+        for (Page page : curPage) {
             page.markDirty(true, tid);
-            this.map.put(page.getId(), page);
+            this.put(page.getId(), page);
         }
     }
 
@@ -190,9 +276,9 @@ public class BufferPool {
         int tableid = t.getRecordId().getPageId().getTableId();
         DbFile dbFile = Database.getCatalog().getDatabaseFile(tableid);
         List<Page> curPage = dbFile.deleteTuple(tid, t);
-        for (Page page: curPage) {
+        for (Page page : curPage) {
             page.markDirty(true, tid);
-            this.map.put(page.getId(), page);
+            this.put(page.getId(), page);
         }
     }
 
@@ -204,7 +290,11 @@ public class BufferPool {
     public synchronized void flushAllPages() throws IOException {
         // some code goes here
         // not necessary for lab1
-
+        for (Map.Entry<PageId, Node<Page>> entry : this.lruCache.entrySet()) {
+            if (entry.getValue().getData().isDirty() != null) {
+                this.flushPage(entry.getValue().getData().getId());
+            }
+        }
     }
 
     /**
@@ -219,6 +309,7 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // not necessary for lab1
+        this.remove(pid);
     }
 
     /**
@@ -229,6 +320,9 @@ public class BufferPool {
     private synchronized void flushPage(PageId pid) throws IOException {
         // some code goes here
         // not necessary for lab1
+        Page dirtyPage = this.lruCache.get(pid).getData();
+        Database.getCatalog().getDatabaseFile(pid.getTableId()).writePage(dirtyPage);  // 写入磁盘
+        dirtyPage.markDirty(false, null);
     }
 
     /**
@@ -246,6 +340,16 @@ public class BufferPool {
     private synchronized void evictPage() throws DbException {
         // some code goes here
         // not necessary for lab1
+        Node<Page> node = this.head.getNext();
+        this.remove(node.getData().getId());
+        try {
+            if (node.getData().isDirty() != null) {
+                flushPage(node.getData().getId());
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        this.discardPage(node.getData().getId());
     }
 
 }

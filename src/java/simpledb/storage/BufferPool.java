@@ -104,6 +104,7 @@ public class BufferPool {
         this.lruCache.put(pid, curNode);
 
         curNode.setNext(this.head.getNext());
+        curNode.setPrev(this.head);  // fix bug in lab3 exercise2
         this.head.getNext().setPrev(curNode);  // 不能忽略这一步
         this.head.setNext(curNode);
     }

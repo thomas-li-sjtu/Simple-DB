@@ -7,11 +7,13 @@ import simpledb.execution.Predicate;
  */
 public class IntHistogram {
 
-    private int min, max, numBuckets;
-    private int buckets[];
+    private final int min;
+    private final int max;
+    private int numBuckets;
+    private final int[] buckets;
     private int numTuples;
 
-    private double width;
+    private final double width;
 
     /**
      * Create a new IntHistogram.
@@ -35,10 +37,25 @@ public class IntHistogram {
         this.min = min;
         this.max = max;
         this.numBuckets = buckets;
-        this.width = (max - min + 1.0) / buckets;
+        this.width = (double) (max - min) / buckets;
         this.buckets = new int[buckets];
         this.numTuples = 0;
     }
+
+    private int getIndex(int v) {
+        int idx;
+        if (v>max || v<min){
+            throw new IllegalArgumentException("this value is out of the boundary, which causes the error.");
+        }
+        if (v==max){
+            idx = numBuckets-1;
+        }
+        else {
+            idx = (int) ((v-min)/width);
+        }
+        return idx;
+    }
+
 
     /**
      * Add a value to the set of values that you are keeping a histogram of.
@@ -47,11 +64,8 @@ public class IntHistogram {
      */
     public void addValue(int v) {
         // some code goes here
-        if (v < this.min || v > this.max) {
-            return;
-        }
-        int index = (int) ((v - this.min) / width);
-        this.buckets[index] += 1;
+        int idx = getIndex(v);
+        buckets[idx]++;
         this.numTuples += 1;
     }
 
@@ -67,35 +81,37 @@ public class IntHistogram {
      */
     public double estimateSelectivity(Predicate.Op op, int v) {
         // some code goes here
-        // some code goes here
-        switch (op) {
-            case EQUALS:
-                return this.estimateSelectivity(Predicate.Op.GREATER_THAN, v - 1)
-                        - this.estimateSelectivity(Predicate.Op.GREATER_THAN, v - 1);
-            case LESS_THAN:
-                return 1.0 - this.estimateSelectivity(Predicate.Op.GREATER_THAN_OR_EQ, v);
-            case LESS_THAN_OR_EQ:
-                return 1.0 - this.estimateSelectivity(Predicate.Op.GREATER_THAN, v);
-            case GREATER_THAN_OR_EQ:
-                return this.estimateSelectivity(Predicate.Op.GREATER_THAN, v - 1);
-            case GREATER_THAN:
-                if (v <= this.min) {
-                    return 1.0;  // 此时整个直方图都算进去
-                } else if (v > this.max) {
-                    return 0.0;
-                } else {
-                    int index = (int) ((v - this.min) / this.width);
-                    double sum = 0.0;
-                    for (int i = index + 1; i < buckets.length; i++) {
-                        sum += buckets[i];
-                    }
-                    double indexCoverage = buckets[index] * ( // v所在的bucket中，大于等于v的tuple数目
-                            (min + (index + 1) * width - v - 1) / width
-                    );
-                    return (sum + indexCoverage) / this.numTuples;
-                }
-            case NOT_EQUALS:
-                return 1.0 - this.estimateSelectivity(Predicate.Op.EQUALS, v);
+        double selectivity = 0.0;
+        if (op.equals(Predicate.Op.LESS_THAN)) {
+            if (v <= min) return 0.0;
+            if (v >= max) return 1.0;
+            int index = getIndex(v);
+            for (int i = 0; i < index; i++) {
+                selectivity += (buckets[i] + 0.0) / numTuples;
+            }
+            selectivity += (buckets[index] * (v - index * width - min)) / (width * numTuples);
+            return selectivity;
+        }
+        // ==; equals operator.
+        if (op.equals(Predicate.Op.EQUALS)) {
+            if (v < min || v > max) return 0.0;
+            return 1.0 * buckets[getIndex(v)] / ((int) width + 1) / numTuples;
+        }
+        // !=; not equal operator
+        if (op.equals(Predicate.Op.NOT_EQUALS)) {
+            return 1 - estimateSelectivity(Predicate.Op.EQUALS, v);
+        }
+        // >; greater than operator
+        if (op.equals(Predicate.Op.GREATER_THAN)) {
+            return 1 - estimateSelectivity(Predicate.Op.LESS_THAN_OR_EQ, v);
+        }
+        // <=; less than or equal operator
+        if (op.equals(Predicate.Op.LESS_THAN_OR_EQ)) {
+            return estimateSelectivity(Predicate.Op.LESS_THAN, v + 1);
+        }
+        // >=; greater than or equal operator
+        if (op.equals(Predicate.Op.GREATER_THAN_OR_EQ)) {
+            return estimateSelectivity(Predicate.Op.GREATER_THAN, v - 1);
         }
         return 0.0;
     }

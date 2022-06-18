@@ -170,7 +170,7 @@ public class JoinOptimizer {
                 card = card2;
             }
         } else {
-            card = (int) (0.3*card1*card2);
+            card = (int) (0.3 * card1 * card2);
         }
         return card <= 0 ? 1 : card;
     }
@@ -225,10 +225,34 @@ public class JoinOptimizer {
             Map<String, TableStats> stats,
             Map<String, Double> filterSelectivities, boolean explain)
             throws ParsingException {
-
         // some code goes here
-        //Replace the following
-        return joins;
+        PlanCache cache = new PlanCache();
+        CostCard bestCostCard = new CostCard();
+        for (int i = 1; i < joins.size() + 1; i++) {  // 伪代码中，i从1到|j|
+            Set<Set<LogicalJoinNode>> subsetJoinNodes = enumerateSubsets(joins, i);
+            for (Set<LogicalJoinNode> subset : subsetJoinNodes) {
+                double best = Double.MAX_VALUE;
+                for (LogicalJoinNode joinNode : subset) {
+                    CostCard costCard = this.computeCostAndCardOfSubplan(
+                            stats,
+                            filterSelectivities,
+                            joinNode,
+                            subset,
+                            best,
+                            cache
+                            );
+                    if (costCard == null) {
+                        continue;
+                    }
+                    best = costCard.cost;
+                    bestCostCard = costCard;
+                }
+                if (best != Double.MAX_VALUE) {
+                    cache.addPlan(subset, best, bestCostCard.card, bestCostCard.plan);
+                }
+            }
+        }
+        return bestCostCard.plan;
     }
 
     // ===================== Private Methods =================================

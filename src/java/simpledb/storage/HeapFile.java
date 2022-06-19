@@ -128,6 +128,8 @@ public class HeapFile implements DbFile {
                 res.add(curPage);
                 this.writePage(curPage);
                 return res;
+            } else {
+                Database.getBufferPool().unsafeReleasePage(tid, curPage.pid);
             }
         }
         HeapPage curPage = new HeapPage(

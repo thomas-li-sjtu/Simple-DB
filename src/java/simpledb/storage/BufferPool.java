@@ -11,6 +11,8 @@ import java.io.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
+import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -46,6 +48,8 @@ public class BufferPool {
     private final Node<Page> head;
     private final Node<Page> tail;  // lruCache的头和尾
 
+    private LockManager lockManager;
+
     /**
      * Creates a BufferPool that caches up to numPages pages.
      *
@@ -59,6 +63,116 @@ public class BufferPool {
         this.tail = new Node<>();
         this.head.setNext(this.tail);
         this.tail.setPrev(this.head);
+
+        this.lockManager = new LockManager();
+    }
+
+    public class Lock {
+        private TransactionId tid;
+        private Permissions permission;
+
+        public Lock (TransactionId tid, Permissions permission) {
+            this.permission = permission;
+            this.tid = tid;
+        }
+
+        public Permissions getPermission() {
+            return permission;
+        }
+
+        public TransactionId getTid() {
+            return tid;
+        }
+
+        public void setTid(TransactionId tid) {
+            this.tid = tid;
+        }
+
+        public void setPermission(Permissions permission) {
+            this.permission = permission;
+        }
+    }
+
+    public class LockManager {
+        private ConcurrentHashMap<PageId, Vector<Lock>> lockMap;
+
+        public LockManager () {
+            lockMap = new ConcurrentHashMap<>();
+        }
+
+        // 删除一个lock，如果对应的Vector为空，则删除这个entry
+        public synchronized void removeLock(TransactionId tid, PageId pageId) {
+            Vector<Lock> curLockVector = this.lockMap.get(pageId);
+            int index = 0;
+            boolean found = false;
+            for (int i = 0; i < curLockVector.size(); i++) {
+                if (curLockVector.get(i).getTid().equals(tid)) {
+                    found = true;
+                    index = i;
+                    break;
+                }
+            }
+            if (found) {
+                curLockVector.remove(index);
+                if (curLockVector.size() == 0) {
+                    this.lockMap.remove(pageId);
+                }
+            }
+        }
+
+        // 加锁
+        public synchronized boolean setLock(PageId pageId, TransactionId tid, Permissions type) {
+            Vector<Lock> curLockVector = this.lockMap.get(pageId);
+            if (curLockVector == null) {  // 如果这个page没有上锁
+                curLockVector = new Vector<>();
+                curLockVector.add(new Lock(tid, type));
+                this.lockMap.put(pageId, curLockVector);
+                return true;
+            } else {
+                if (type.equals(Permissions.READ_WRITE)) {
+                    // 申请独占锁
+                    if (curLockVector.size() == 1) {
+                        if (curLockVector.get(0).getTid().equals(tid)) {
+                            // 只有一个锁并且锁的事务id一致，看是否升级锁
+                            if (curLockVector.get(0).getPermission().equals(Permissions.READ_ONLY)) {
+                                curLockVector.get(0).setPermission(type);
+                                this.lockMap.put(pageId, curLockVector);
+                            }
+                            return true;
+                        } else{ // 当前页面已经被其他事务共享，暂时不能独占
+                            return false;
+                        }
+                    } else { // 当前页面的锁有多个
+                        return false;
+                    }
+                } else {
+                    // 申请共享锁
+                    for (Lock curLock : curLockVector) {
+                        if (curLock.getPermission().equals(Permissions.READ_WRITE)) { // 如果这个锁是独占锁，此时只能有一个锁
+                            return curLock.getTid().equals(tid) && curLockVector.size() == 1;
+                        }
+                        if(curLock.getTid().equals(tid)) {
+                            return true;
+                        }
+                    }
+                    curLockVector.add(new Lock(tid, type));
+                    this.lockMap.put(pageId, curLockVector);
+                    return true;
+                }
+            }
+        }
+
+        // 查看一个tid是否对pid加了lock
+        public synchronized boolean holdLock (PageId pid, TransactionId tid) {
+            Vector<Lock> curLockVector = this.lockMap.get(pid);
+            for (Lock curLock : curLockVector) {
+                if (curLock.getTid().equals(tid)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
     }
 
     public class Node<T> {
@@ -168,6 +282,16 @@ public class BufferPool {
     public Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
         // some code goes here
+        boolean hasLock = false;
+        long startTime = System.currentTimeMillis();
+        long timeout = 100;
+        while (!hasLock) {
+            if (System.currentTimeMillis()-startTime > timeout) {
+                throw new TransactionAbortedException();
+            }
+            hasLock = this.lockManager.setLock(pid, tid, perm);
+        }
+
         Node<Page> curNode = this.lruCache.get(pid);
         if (curNode == null) {
             if (this.lruCache.size() == this.numPages) {
@@ -177,12 +301,11 @@ public class BufferPool {
             this.put(pid, Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid));
             // 从磁盘读出page（page有自己的table id，而table和dbfile一一对应，dbfile是与磁盘交互的接口）
             curNode = this.lruCache.get(pid);  // 将载入buffer pool的page给到curPage
-            return curNode.getData();
         } else {
             this.remove(curNode.getData().getId());
             this.put(curNode.getData().getId(), curNode.getData());
-            return curNode.getData();
         }
+        return curNode.getData();
     }
 
     /**
@@ -197,6 +320,7 @@ public class BufferPool {
     public void unsafeReleasePage(TransactionId tid, PageId pid) {
         // some code goes here
         // not necessary for lab1|lab2
+        this.lockManager.removeLock(tid, pid);
     }
 
     /**
@@ -207,6 +331,7 @@ public class BufferPool {
     public void transactionComplete(TransactionId tid) {
         // some code goes here
         // not necessary for lab1|lab2
+        transactionComplete(tid, true);
     }
 
     /**
@@ -215,7 +340,7 @@ public class BufferPool {
     public boolean holdsLock(TransactionId tid, PageId p) {
         // some code goes here
         // not necessary for lab1|lab2
-        return false;
+        return this.lockManager.holdLock(p, tid);
     }
 
     /**
@@ -228,6 +353,7 @@ public class BufferPool {
     public void transactionComplete(TransactionId tid, boolean commit) {
         // some code goes here
         // not necessary for lab1|lab2
+
     }
 
     /**

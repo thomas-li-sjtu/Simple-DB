@@ -48,7 +48,7 @@ public class BufferPool {
     private final Node<Page> head;
     private final Node<Page> tail;  // lruCache的头和尾
 
-    private LockManager lockManager;
+    private final LockManager lockManager;
 
     /**
      * Creates a BufferPool that caches up to numPages pages.
@@ -67,11 +67,11 @@ public class BufferPool {
         this.lockManager = new LockManager();
     }
 
-    public class Lock {
+    public static class Lock {
         private TransactionId tid;
         private Permissions permission;
 
-        public Lock (TransactionId tid, Permissions permission) {
+        public Lock(TransactionId tid, Permissions permission) {
             this.permission = permission;
             this.tid = tid;
         }
@@ -93,10 +93,10 @@ public class BufferPool {
         }
     }
 
-    public class LockManager {
-        private ConcurrentHashMap<PageId, Vector<Lock>> lockMap;
+    public static class LockManager {
+        private final ConcurrentHashMap<PageId, Vector<Lock>> lockMap;
 
-        public LockManager () {
+        public LockManager() {
             lockMap = new ConcurrentHashMap<>();
         }
 
@@ -120,6 +120,21 @@ public class BufferPool {
             }
         }
 
+        // 删除与一个事务相关的所有lock
+        public synchronized void removeTidLocks(TransactionId tid) {
+            for (Map.Entry<PageId, Vector<Lock>> entry : this.lockMap.entrySet()) {
+                Vector<Lock> lockList = entry.getValue();
+                for (int i = 0; i < lockList.size(); i++) {
+                    if (lockList.get(i).getTid().equals(tid)) {
+                        lockList.remove(lockList.get(i));
+                    }
+                }
+                if (lockList.size() == 0) {
+                    this.lockMap.remove(entry.getKey());
+                }
+            }
+        }
+
         // 加锁
         public synchronized boolean setLock(PageId pageId, TransactionId tid, Permissions type) {
             Vector<Lock> curLockVector = this.lockMap.get(pageId);
@@ -139,7 +154,7 @@ public class BufferPool {
                                 this.lockMap.put(pageId, curLockVector);
                             }
                             return true;
-                        } else{ // 当前页面已经被其他事务共享，暂时不能独占
+                        } else { // 当前页面已经被其他事务共享，暂时不能独占
                             return false;
                         }
                     } else { // 当前页面的锁有多个
@@ -151,7 +166,7 @@ public class BufferPool {
                         if (curLock.getPermission().equals(Permissions.READ_WRITE)) { // 如果这个锁是独占锁，此时只能有一个锁
                             return curLock.getTid().equals(tid) && curLockVector.size() == 1;
                         }
-                        if(curLock.getTid().equals(tid)) {
+                        if (curLock.getTid().equals(tid)) {
                             return true;
                         }
                     }
@@ -163,7 +178,7 @@ public class BufferPool {
         }
 
         // 查看一个tid是否对pid加了lock
-        public synchronized boolean holdLock (PageId pid, TransactionId tid) {
+        public synchronized boolean holdLock(PageId pid, TransactionId tid) {
             Vector<Lock> curLockVector = this.lockMap.get(pid);
             for (Lock curLock : curLockVector) {
                 if (curLock.getTid().equals(tid)) {
@@ -199,6 +214,10 @@ public class BufferPool {
             this.prev = prev;
         }
 
+        public void setData(T data) {
+            this.data = data;
+        }
+
         public T getData() {
             return data;
         }
@@ -212,33 +231,15 @@ public class BufferPool {
         }
     }
 
-    public void put(PageId pid, Page curPage) {
-        // 将curPage放到lruCache的最前面
-        Node<Page> curNode = new Node<>(curPage);
-        this.lruCache.put(pid, curNode);
-
+    public void put(Node<Page> curNode) {
+        // 向链表中添加
         curNode.setNext(this.head.getNext());
         curNode.setPrev(this.head);  // fix bug in lab3 exercise2
         this.head.getNext().setPrev(curNode);  // 不能忽略这一步
         this.head.setNext(curNode);
     }
 
-    public void removeLast() {
-        // 淘汰最后一个Node
-        Node<Page> lastPage = this.getTail();
-        this.lruCache.remove(lastPage.getData().getId());
-
-        Node<Page> prevNode = lastPage.getPrev();
-        Node<Page> nextNode = lastPage.getNext();
-        prevNode.setNext(nextNode);
-        nextNode.setPrev(prevNode);
-    }
-
-    public void remove(PageId pageId) {
-        // 从中lruCahe中删除一个Page
-        // 从字典中删除
-        Node<Page> curNode = this.lruCache.get(pageId);
-        this.lruCache.remove(pageId);
+    public void remove(Node<Page> curNode) {
         // 从链表中删除
         Node<Page> prevNode = curNode.getPrev();
         Node<Page> nextNode = curNode.getNext();
@@ -279,14 +280,14 @@ public class BufferPool {
      * @param pid  the ID of the requested page
      * @param perm the requested permissions on the page
      */
-    public Page getPage(TransactionId tid, PageId pid, Permissions perm)
+    public synchronized Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
         // some code goes here
         boolean hasLock = false;
         long startTime = System.currentTimeMillis();
         long timeout = 100;
         while (!hasLock) {
-            if (System.currentTimeMillis()-startTime > timeout) {
+            if (System.currentTimeMillis() - startTime > timeout) {
                 throw new TransactionAbortedException();
             }
             hasLock = this.lockManager.setLock(pid, tid, perm);
@@ -295,15 +296,16 @@ public class BufferPool {
         Node<Page> curNode = this.lruCache.get(pid);
         if (curNode == null) {
             if (this.lruCache.size() == this.numPages) {
-                // 淘汰最后一个Node
-                this.removeLast();
+                evictPage();
             }
-            this.put(pid, Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid));
+            curNode = new Node<>(Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid));
+            this.put(curNode);
+            this.lruCache.put(pid, curNode);
             // 从磁盘读出page（page有自己的table id，而table和dbfile一一对应，dbfile是与磁盘交互的接口）
-            curNode = this.lruCache.get(pid);  // 将载入buffer pool的page给到curPage
+            // 将载入buffer pool的page给到curPage
         } else {
-            this.remove(curNode.getData().getId());
-            this.put(curNode.getData().getId(), curNode.getData());
+            this.remove(curNode);
+            this.put(curNode);
         }
         return curNode.getData();
     }
@@ -353,7 +355,31 @@ public class BufferPool {
     public void transactionComplete(TransactionId tid, boolean commit) {
         // some code goes here
         // not necessary for lab1|lab2
+        if (commit) {
+            try {
+                flushPages(tid);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else {
+            this.restorePages(tid);
+        }
+        lockManager.removeTidLocks(tid);
+    }
 
+    // 将脏页修改回磁盘的内容
+    public synchronized void restorePages(TransactionId tid) {
+        for (Node<Page> node : this.lruCache.values()) {
+            if (tid.equals(node.getData().isDirty())) {  // 不能写反，可能isDirty()返回null
+                Page originPage = Database.getCatalog().getDatabaseFile(
+                        node.getData().getId().getTableId()).readPage(node.getData().getId()
+                );  // 此时originPage的dirty标志为False
+                this.remove(node);
+                node.setData(originPage);
+                this.put(node);
+                this.lruCache.put(originPage.getId(), node);
+            }
+        }
     }
 
     /**
@@ -379,7 +405,10 @@ public class BufferPool {
         List<Page> curPage = dbFile.insertTuple(tid, t);
         for (Page page : curPage) {
             page.markDirty(true, tid);
-            this.put(page.getId(), page);
+            Node<Page> curNode = new Node<>(page);
+            this.remove(this.lruCache.get(page.getId()));
+            this.put(curNode);
+            this.lruCache.put(curNode.getData().getId(), curNode);
         }
     }
 
@@ -405,7 +434,10 @@ public class BufferPool {
         List<Page> curPage = dbFile.deleteTuple(tid, t);
         for (Page page : curPage) {
             page.markDirty(true, tid);
-            this.put(page.getId(), page);
+            Node<Page> curNode = new Node<>(page);
+            this.remove(this.lruCache.get(page.getId()));
+            this.put(curNode);
+            this.lruCache.put(page.getId(), curNode);
         }
     }
 
@@ -436,7 +468,8 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // not necessary for lab1
-        this.remove(pid);
+        this.remove(this.lruCache.get(pid));
+        this.lruCache.remove(pid);
     }
 
     /**
@@ -458,6 +491,13 @@ public class BufferPool {
     public synchronized void flushPages(TransactionId tid) throws IOException {
         // some code goes here
         // not necessary for lab1|lab2
+        Node<Page> node = this.head.getNext();
+        while (!node.equals(this.tail)) {
+            if (node.getData().isDirty() == tid) {
+                this.flushPage(node.getData().getId());
+            }
+            node = node.getNext();
+        }
     }
 
     /**
@@ -467,16 +507,15 @@ public class BufferPool {
     private synchronized void evictPage() throws DbException {
         // some code goes here
         // not necessary for lab1
-        Node<Page> node = this.head.getNext();
-        this.remove(node.getData().getId());
-        try {
-            if (node.getData().isDirty() != null) {
-                flushPage(node.getData().getId());
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
+        Node<Page> node = this.tail.getPrev();
+        while (!node.equals(this.head) && node.getData().isDirty() != null) {
+            node = node.getPrev();
         }
-        this.discardPage(node.getData().getId());
+        if (node.equals(this.head)) { // 全部都是脏页
+            throw new DbException("all pages are dirty");
+        } else {
+            this.discardPage(node.getData().getId());
+        }
     }
 
 }

@@ -126,7 +126,6 @@ public class HeapFile implements DbFile {
             if (curPage.getNumEmptySlots() > 0) {
                 curPage.insertTuple(t);
                 res.add(curPage);
-                this.writePage(curPage);
                 return res;
             } else {
                 Database.getBufferPool().unsafeReleasePage(tid, curPage.pid);
@@ -138,7 +137,6 @@ public class HeapFile implements DbFile {
         );
         curPage.insertTuple(t);
         res.add(curPage);
-        this.writePage(curPage);
         return res;
     }
 

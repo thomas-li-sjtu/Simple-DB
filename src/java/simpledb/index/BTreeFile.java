@@ -188,7 +188,26 @@ public class BTreeFile implements DbFile {
                                        Field f)
 					throws DbException, TransactionAbortedException {
 		// some code goes here
-        return null;
+		// 递归查找
+		if (pid.pgcateg() == BTreePageId.LEAF) {  // 当前page是leafPage
+			return (BTreeLeafPage) this.getPage(tid, dirtypages, pid, perm);
+		} else {
+			// 根据PageID获取internalPage
+			BTreeInternalPage curPage = (BTreeInternalPage) this.getPage(tid, dirtypages, pid, Permissions.READ_ONLY);
+			Iterator<BTreeEntry> iterator = curPage.iterator();
+			if (f == null) {  // 如果field为空，则返回最左边的child
+				return findLeafPage(tid, dirtypages, curPage.getChildId(0), perm, null);
+			}
+			// 遍历InternalPage的entry，注意child的数目为entry+1
+			while (iterator.hasNext()) {
+				BTreeEntry curEntry = iterator.next();
+				if (curEntry.getKey().compare(Op.GREATER_THAN_OR_EQ, f)) {
+					return findLeafPage(tid, dirtypages, curEntry.getLeftChild(), perm, f);
+				}
+			}
+			// 最后一个child
+			return findLeafPage(tid, dirtypages, curPage.getChildId(curPage.getNumEntries()-1), perm, f);
+		}
 	}
 	
 	/**

@@ -406,7 +406,10 @@ public class BufferPool {
         for (Page page : curPage) {
             page.markDirty(true, tid);
             Node<Page> curNode = new Node<>(page);
-            this.remove(this.lruCache.get(page.getId()));
+            if (this.lruCache.get(page.getId()) != null) {
+                // BTree的测试中，page可能会分裂，新分裂出来的page可能不在cache中，自然不用remove
+                this.remove(this.lruCache.get(page.getId()));
+            }
             this.put(curNode);
             this.lruCache.put(curNode.getData().getId(), curNode);
         }
@@ -468,7 +471,9 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // not necessary for lab1
-        this.remove(this.lruCache.get(pid));
+        if (this.lruCache.get(pid) != null) {
+            this.remove(this.lruCache.get(pid));
+        }
         this.lruCache.remove(pid);
     }
 

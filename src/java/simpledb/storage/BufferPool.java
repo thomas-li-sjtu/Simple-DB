@@ -438,7 +438,9 @@ public class BufferPool {
         for (Page page : curPage) {
             page.markDirty(true, tid);
             Node<Page> curNode = new Node<>(page);
-            this.remove(this.lruCache.get(page.getId()));
+            if (this.lruCache.get(page.getId()) != null) {
+                this.remove(this.lruCache.get(page.getId()));
+            }
             this.put(curNode);
             this.lruCache.put(page.getId(), curNode);
         }

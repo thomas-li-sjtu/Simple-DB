@@ -140,7 +140,7 @@ public class LogFile {
     public synchronized int getTotalRecords() {
         return totalRecords;
     }
-    
+
     /** Write an abort record to the log for the specified tid, force
         the log to disk, and perform a rollback
         @param tid The aborting transaction.
@@ -460,6 +460,38 @@ public class LogFile {
             synchronized(this) {
                 preAppend();
                 // some code goes here
+                rollback(tid.getId());
+            }
+        }
+    }
+
+    public void rollback(Long tid) throws NoSuchElementException, IOException{
+        // read backwards
+        Long logRecord = this.tidToFirstLogRecord.get(tid);
+        raf.seek(logRecord);
+        // 需要知道日志的结构
+        while (true) {
+            try {
+                int cpType = raf.readInt();
+                long cpTid = raf.readLong();
+                if (cpType == UPDATE_RECORD) {
+                    long start = raf.getFilePointer();
+                    Page before = this.readPageData(raf);
+
+                    long middle = raf.getFilePointer();
+                    Page after = this.readPageData(raf);
+
+                    if (tid == cpTid) {
+                        // 写入table
+                        Database.getCatalog().getDatabaseFile(before.getId().getTableId()).writePage(before);
+                        // 将原来的page从bufferpool删除
+                        Database.getBufferPool().discardPage(before.getId());
+                    }
+                }
+                // Each log record ends with a long integer file offset representing the position in the log file where the record began.
+                raf.readLong();  // 将整个日志读完
+            } catch (EOFException e) {
+                break;
             }
         }
     }
@@ -487,6 +519,69 @@ public class LogFile {
             synchronized (this) {
                 recoveryUndecided = false;
                 // some code goes here
+                raf = new RandomAccessFile(logFile, "rw");
+                // 已提交的事务id
+                Set<Long> committedId = new HashSet<>();
+                // 事务id对应的beforePage和afterPage
+                Map<Long, List<Page>> beforePages = new HashMap<>();
+                Map<Long, List<Page>> afterPages = new HashMap<>();
+
+                while (true) {
+                    try {
+                        int type = raf.readInt();
+                        long txid = raf.readLong();
+                        switch (type) {
+                            case UPDATE_RECORD:
+                                Page beforeImage = readPageData(raf);
+                                Page afterImage = readPageData(raf);
+
+                                List<Page> l1 = beforePages.getOrDefault(txid, new ArrayList<>());
+                                l1.add(beforeImage);
+                                beforePages.put(txid, l1);
+
+                                List<Page> l2 = afterPages.getOrDefault(txid, new ArrayList<>());
+                                l2.add(afterImage);
+                                afterPages.put(txid, l2);
+                                break;
+                            case COMMIT_RECORD:
+                                committedId.add(txid);
+                                break;
+                            case CHECKPOINT_RECORD:
+                                int numTxs = raf.readInt();
+                                while (numTxs -- > 0) {
+                                    raf.readLong();
+                                    raf.readLong();
+                                }
+                                break;
+                            default:
+                                break;
+                        }
+                        //end
+                        raf.readLong();
+                    } catch (EOFException e) {
+                        break;
+                    }
+                }
+
+                // 未提交事务，直接写before-image
+                for (long txid :beforePages.keySet()) {
+                    if (!committedId.contains(txid)) {
+                        List<Page> pages = beforePages.get(txid);
+                        for (Page p : pages) {
+                            Database.getCatalog().getDatabaseFile(p.getId().getTableId()).writePage(p);
+                        }
+                    }
+                }
+
+                // 已提交事务，直接写after-image
+                for (long txid : committedId) {
+                    if (afterPages.containsKey(txid)) {
+                        List<Page> pages = afterPages.get(txid);
+                        for (Page page : pages) {
+                            Database.getCatalog().getDatabaseFile(page.getId().getTableId()).writePage(page);
+                        }
+                    }
+                }
             }
          }
     }

@@ -136,6 +136,7 @@ public class HeapFile implements DbFile {
                 HeapPage.createEmptyPageData()
         );
         curPage.insertTuple(t);
+        writePage(curPage);
         res.add(curPage);
         return res;
     }

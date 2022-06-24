@@ -488,6 +488,11 @@ public class BufferPool {
         // some code goes here
         // not necessary for lab1
         Page dirtyPage = this.lruCache.get(pid).getData();
+        TransactionId dirtier = dirtyPage.isDirty();
+        if (dirtier != null){
+            Database.getLogFile().logWrite(dirtier, dirtyPage.getBeforeImage(), dirtyPage);
+            Database.getLogFile().force();
+        }
         Database.getCatalog().getDatabaseFile(pid.getTableId()).writePage(dirtyPage);  // 写入磁盘
         dirtyPage.markDirty(false, null);
     }
@@ -500,6 +505,7 @@ public class BufferPool {
         // not necessary for lab1|lab2
         Node<Page> node = this.head.getNext();
         while (!node.equals(this.tail)) {
+            node.getData().setBeforeImage();
             if (node.getData().isDirty() == tid) {
                 this.flushPage(node.getData().getId());
             }

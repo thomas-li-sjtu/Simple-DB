@@ -1,3 +1,17 @@
+Blogs
+==========
+[Lab1: Basic Storage Components](https://thomas-li-sjtu.github.io/2022/06/13/Simple-DB-Lab1/)
+
+[Lab2: Operators](https://thomas-li-sjtu.github.io/2022/06/17/Simple-DB-Lab2/)
+
+[Lab3: Query Optimizer](https://thomas-li-sjtu.github.io/2022/06/19/Simple-DB-Lab3/)
+
+[Lab4: Locking-based Transaction System](https://thomas-li-sjtu.github.io/2022/06/20/Simple-DB-Lab4/)
+
+[Lab5: Index, Insert and Delete Using B+ Tree](https://thomas-li-sjtu.github.io/2022/06/23/Simple-DB-Lab5/)
+
+[Lab6: Rollback and Crash Recovery via Logs](https://thomas-li-sjtu.github.io/2022/06/24/Simple-DB-Lab6/)
+
 course-info
 ===========
 
